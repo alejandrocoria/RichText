@@ -1,6 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 // Headers
 ////////////////////////////////////////////////////////////////////////////////
+#include <cassert>
+
 #include "RichText.hpp"
 
 #include <SFML/Graphics/Font.hpp>
@@ -9,8 +11,87 @@
 
 #include <SFML/System/String.hpp>
 
+namespace
+{
+
+float getSpaceAfterText(const sf::Text& text)
+{
+    const sf::String& string = text.getString();
+
+    if (string.getSize() == 0)
+        return 0;
+
+    sf::Uint32 lastChar = string[string.getSize() - 1];
+
+    if ((lastChar == ' ') || (lastChar == '\t') || (lastChar == '\n'))
+        return 0;
+
+    unsigned int size = text.getCharacterSize();
+    bool bold = (text.getStyle() & sf::Text::Bold) != 0;
+    const sf::Glyph& glyph = text.getFont()->getGlyph(lastChar, size, bold);
+    return glyph.advance - glyph.bounds.width;
+}
+
+}
+
 namespace sfe
 {
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::Line::setCharacterColor(std::size_t pos, sf::Color color)
+{
+    assert(pos < getLength());
+    isolateCharacter(pos);
+    std::size_t stringToFormat = convertLinePosToLocal(pos);
+    m_texts[stringToFormat].setFillColor(color);
+    updateGeometry();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::Line::setCharacterOutlineColor(std::size_t pos, sf::Color color)
+{
+    assert(pos < getLength());
+    isolateCharacter(pos);
+    std::size_t stringToFormat = convertLinePosToLocal(pos);
+    m_texts[stringToFormat].setOutlineColor(color);
+    updateGeometry();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::Line::setCharacterOutlineThickness(std::size_t pos, float thickness)
+{
+    assert(pos < getLength());
+    isolateCharacter(pos);
+    std::size_t stringToFormat = convertLinePosToLocal(pos);
+    m_texts[stringToFormat].setOutlineThickness(thickness);
+    updateGeometry();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::Line::setCharacterStyle(std::size_t pos, sf::Text::Style style)
+{
+    assert(pos < getLength());
+    isolateCharacter(pos);
+    std::size_t stringToFormat = convertLinePosToLocal(pos);
+    m_texts[stringToFormat].setStyle(style);
+    updateGeometry();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::Line::setCharacter(std::size_t pos, sf::Uint32 character)
+{
+    assert(pos < getLength());
+    sf::Text& text = m_texts[convertLinePosToLocal(pos)];
+    sf::String string = text.getString();
+    string[pos] = character;
+    text.setString(string);
+    updateGeometry();
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 void RichText::Line::setCharacterSize(unsigned int size)
@@ -33,6 +114,61 @@ void RichText::Line::setFont(const sf::Font &font)
 
 
 ////////////////////////////////////////////////////////////////////////////////
+std::size_t RichText::Line::getLength() const
+{
+    std::size_t count = 0;
+    for(sf::Text &text : m_texts)
+    {
+        count += text.getString().getSize();
+    }
+    return count;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+sf::Color RichText::Line::getCharacterColor(std::size_t pos) const
+{
+    assert(pos < getLength());
+    return m_texts[convertLinePosToLocal(pos)].getFillColor();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+sf::Color RichText::Line::getCharacterOutlineColor(std::size_t pos) const
+{
+    assert(pos < getLength());
+    return m_texts[convertLinePosToLocal(pos)].getOutlineColor();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+float RichText::Line::getCharacterOutlineThickness(std::size_t pos) const
+{
+    assert(pos < getLength());
+    return m_texts[convertLinePosToLocal(pos)].getOutlineThickness();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+sf::Uint32 RichText::Line::getCharacterStyle(std::size_t pos) const
+{
+    assert(pos < getLength());
+    return m_texts[convertLinePosToLocal(pos)].getStyle();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+sf::Uint32 RichText::Line::getCharacter(std::size_t pos) const
+{
+    assert(pos < getLength());
+    // Similar to setCharacter()
+    sf::Text& text = m_texts[convertLinePosToLocal(pos)];
+    sf::String string = text.getString();
+    return string[pos];
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
 const std::vector<sf::Text> &RichText::Line::getTexts() const
 {
     return m_texts;
@@ -43,7 +179,10 @@ const std::vector<sf::Text> &RichText::Line::getTexts() const
 void RichText::Line::appendText(sf::Text text)
 {
     // Set text offset
-    updateTextAndGeometry(text);
+    if (m_texts.empty())
+        updateTextAndGeometry(text);
+    else
+        updateTextAndGeometry(text, getSpaceAfterText(m_texts.back()));
 
     // Push back
     m_texts.push_back(std::move(text));
@@ -75,25 +214,73 @@ void RichText::Line::draw(sf::RenderTarget &target, sf::RenderStates states) con
 
 
 ////////////////////////////////////////////////////////////////////////////////
-void RichText::Line::updateGeometry() const
+std::size_t RichText::Line::convertLinePosToLocal(std::size_t& pos) const
 {
-    m_bounds = sf::FloatRect();
-
-    for (sf::Text &text : m_texts)
-        updateTextAndGeometry(text);
+    // Trying to access something out-of-bounds is Undefined Behaviour.
+    // Let's not let that happen, OK?
+    assert(pos < getLength());
+    // Store our current position in the text vector
+    std::size_t arrayIndex = 0;
+    // Here, we select the right sf::Text to change
+    for (; pos >= m_texts[arrayIndex].getString().getSize(); ++arrayIndex)
+    {
+        pos -= m_texts[arrayIndex].getString().getSize();
+    }
+    return arrayIndex;
 }
 
 
 ////////////////////////////////////////////////////////////////////////////////
-void RichText::Line::updateTextAndGeometry(sf::Text &text) const
+void RichText::Line::isolateCharacter(std::size_t pos)
+{
+    std::size_t localPos = pos;
+    std::size_t index = convertLinePosToLocal(localPos);
+    sf::Text copy = m_texts[index];
+    if(copy.getString().getSize() == 1)
+        return;
+    m_texts.erase(m_texts.begin() + index);
+    // Copy the original text to maintain formatting
+    sf::Text temp = copy;
+    if(localPos != copy.getString().getSize() - 1)
+    {
+        temp.setString(copy.getString().substring(localPos+1));
+        m_texts.insert(m_texts.begin() + index, temp);
+    }
+    temp.setString(copy.getString().substring(localPos, 1));
+    m_texts.insert(m_texts.begin() + index, temp);
+    if(localPos != 0)
+    {
+        temp.setString(copy.getString().substring(0, localPos));
+        m_texts.insert(m_texts.begin() + index, temp);
+    }
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::Line::updateGeometry() const
+{
+    m_bounds = sf::FloatRect();
+
+    for (auto it = m_texts.begin(), prev = it; it != m_texts.end(); prev = it++)
+    {
+        if (it == m_texts.begin())
+            updateTextAndGeometry(*it);
+        else
+            updateTextAndGeometry(*it, getSpaceAfterText(*prev));
+    }
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::Line::updateTextAndGeometry(sf::Text &text, float spacing) const
 {
     // Set text offset
-    text.setPosition(m_bounds.width, 0.f);
+    text.setPosition(m_bounds.width + spacing, 0.f);
 
     // Update bounds
     int lineSpacing = text.getFont()->getLineSpacing(text.getCharacterSize());
     m_bounds.height = std::max(m_bounds.height, static_cast<float>(lineSpacing));
-    m_bounds.width += text.getGlobalBounds().width;
+    m_bounds.width += text.getGlobalBounds().width + spacing;
 }
 
 
@@ -122,6 +309,22 @@ RichText & RichText::operator << (const sf::Color &color)
 
 
 ////////////////////////////////////////////////////////////////////////////////
+RichText & RichText::operator << (const OutlineColor &outlineColor)
+{
+    m_currentOutlineColor = outlineColor.color;
+    return *this;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+RichText & RichText::operator << (const OutlineThickness &outlineThickness)
+{
+    m_currentOutlineThickness = outlineThickness.thickness;
+    return *this;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
 RichText & RichText::operator << (sf::Text::Style style)
 {
     m_currentStyle = style;
@@ -130,7 +333,8 @@ RichText & RichText::operator << (sf::Text::Style style)
 
 
 ////////////////////////////////////////////////////////////////////////////////
-std::vector<sf::String> explode(const sf::String &string, sf::Uint32 delimiter) {
+std::vector<sf::String> explode(const sf::String &string, sf::Uint32 delimiter)
+{
     if (string.isEmpty())
         return std::vector<sf::String>();
 
@@ -204,6 +408,50 @@ RichText & RichText::operator << (const sf::String &string)
 
 
 ////////////////////////////////////////////////////////////////////////////////
+void RichText::setCharacterColor(std::size_t line, std::size_t pos, sf::Color color)
+{
+    assert(line < m_lines.size());
+    m_lines[line].setCharacterColor(pos, color);
+    updateGeometry();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::setCharacterOutlineColor(std::size_t line, std::size_t pos, sf::Color color)
+{
+    assert(line < m_lines.size());
+    m_lines[line].setCharacterOutlineColor(pos, color);
+    updateGeometry();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::setCharacterOutlineThickness(std::size_t line, std::size_t pos, float thickness)
+{
+    assert(line < m_lines.size());
+    m_lines[line].setCharacterOutlineThickness(pos, thickness);
+    updateGeometry();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::setCharacterStyle(std::size_t line, std::size_t pos, sf::Text::Style style)
+{
+    assert(line < m_lines.size());
+    m_lines[line].setCharacterStyle(pos, style);
+    updateGeometry();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+void RichText::setCharacter(std::size_t line, std::size_t pos, sf::Uint32 character)
+{
+    assert(line < m_lines.size());
+    m_lines[line].setCharacter(pos, character);
+    updateGeometry();
+}
+
+////////////////////////////////////////////////////////////////////////////////
 void RichText::setCharacterSize(unsigned int size)
 {
     // Maybe skip
@@ -247,6 +495,46 @@ void RichText::clear()
 
     // Reset bounds
     m_bounds = sf::FloatRect();
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+sf::Color RichText::getCharacterColor(std::size_t line, std::size_t pos) const
+{
+    assert(line < m_lines.size());
+    return m_lines[line].getCharacterColor(pos);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+sf::Color RichText::getCharacterOutlineColor(std::size_t line, std::size_t pos) const
+{
+    assert(line < m_lines.size());
+    return m_lines[line].getCharacterOutlineColor(pos);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+float RichText::getCharacterOutlineThickness(std::size_t line, std::size_t pos) const
+{
+    assert(line < m_lines.size());
+    return m_lines[line].getCharacterOutlineThickness(pos);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+sf::Uint32 RichText::getCharacterStyle(std::size_t line, std::size_t pos) const
+{
+    assert(line < m_lines.size());
+    return m_lines[line].getCharacterStyle(pos);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+sf::Uint32 RichText::getCharacter(std::size_t line, std::size_t pos) const
+{
+    assert(line < m_lines.size());
+    return m_lines[line].getCharacter(pos);
 }
 
 
@@ -300,6 +588,8 @@ RichText::RichText(const sf::Font *font)
     : m_font(font),
       m_characterSize(30),
       m_currentColor(sf::Color::White),
+      m_currentOutlineColor(sf::Color::Black),
+      m_currentOutlineThickness(0),
       m_currentStyle(sf::Text::Regular)
 {
 
@@ -311,7 +601,9 @@ sf::Text RichText::createText(const sf::String &string) const
 {
     sf::Text text;
     text.setString(string);
-    text.setColor(m_currentColor);
+    text.setFillColor(m_currentColor);
+    text.setOutlineColor(m_currentOutlineColor);
+    text.setOutlineThickness(m_currentOutlineThickness);
     text.setStyle(m_currentStyle);
     text.setCharacterSize(m_characterSize);
     if (m_font)
